@@ -1,0 +1,168 @@
+---
+title: "Practical Machine Learning"
+author: "Deng Guanglei"
+date: "22/10/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background (From Question)
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. Our goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har
+
+## Data
+
+The activities are categorized into 5 classes:
+
+- A: Exactly according to the specification
+- B: Throwing the elbows to the front
+- C: Lifting the dumbbell only halfway
+- D: Lowering the dumbbell only halfway
+- E: Throwing the hips to the front
+
+After a simple preliminary analysis, we can see the data points are grouped into windows and some statistics are done for each window (i.e. amplitude, min, max, avg, var, stddev, skewness, kurtosis). As we are predicting using single data points, we exclude these columns from our predictors. We also exclude columns relating to window info (i.e. new_window, num_window) and timestamp info (i.e. raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp). So the remaining useful columns are basically measurements taken at four positions (i.e. forearm, arm, belt and dumbbell). And there are two types of measurements:
+
+1. Overall: {yaw, total_accel, roll, pitch}\_{forearm, arm, belt, dumbbell}
+2. Dimensional: {magnet, gyros, accel}\_{forearm, arm, belt, dumbbell}\_{x, y, z}
+
+We'll use these columns as our predictors. The training dataset is broken into training set (80%) and cross-validation set (20%).
+
+```{r, echo=FALSE}
+
+for(fn in c('pml-training.csv', 'pml-testing.csv')){
+  if (!file.exists(paste0('data/', fn))){
+    download.file(
+      paste0('https://d396qusza40orc.cloudfront.net/predmachlearn/', fn),
+      destfile = paste0('data/', fn)
+    )
+  }
+}
+
+```
+
+```{r message=FALSE}
+library(caret)
+
+needed <- function(colname){
+  strsplit(colname, '_')[[1]][1] %in% c('yaw', 'total', 'roll', 'pitch', 'magnet', 'gyros', 'accel') || colname == 'classe'
+}
+
+dropColumns <- function(df){
+  df[, colnames(df)[sapply(colnames(df), needed)]]
+}
+
+dat <- dropColumns(read.csv('data/pml-training.csv'))
+
+set.seed(12345)
+
+inTrn <- createDataPartition(dat$classe, p=0.8, list=FALSE)
+trn <- dat[inTrn, ]
+cv <- dat[-inTrn, ]
+tst <- dropColumns(read.csv('data/pml-testing.csv'))
+```
+
+## Models
+
+```{r echo=FALSE}
+## This function caches result so that long processing calculations won't be repeated.
+train <- function(...){
+  kwargs <- list(...)
+  obj.name <- paste0('mod', toupper(kwargs$method))
+  if('RF' %in% names(kwargs$data)){
+    obj.name <- 'modEns'
+  }
+  filename <- paste0('data/', obj.name, '.obj')
+  if (file.exists(filename)){
+    load(file =filename)
+  }else{
+    mod <- caret::train(...)
+    save(mod, file = filename)
+  }
+  mod
+}
+```
+
+### Random Forest:
+
+```{r}
+modRF <- train(
+  classe ~ .,
+  preProcess=c("center", "scale"), method = "rf", data = trn
+)
+```
+
+```{r}
+predRF <- predict(modRF, newdata = cv)
+cmRF <- confusionMatrix(cv$classe, predRF)
+cmRF
+```
+
+The random forest method gives an accuracy of `r cmRF$overall['Accuracy']`.
+
+### Gradient Boosting:
+
+```{r}
+modGBM <- train(
+  classe ~ .,
+  preProcess=c("center", "scale"), method = "gbm", data = trn
+)
+```
+
+```{r}
+predGBM <- predict(modGBM, newdata = cv)
+cmGBM <- confusionMatrix(cv$classe, predGBM)
+cmGBM
+```
+
+The GBM method gives an accuracy of `r cmGBM$overall['Accuracy']`.
+
+### Linear Discriminant Analysis:
+
+```{r}
+modLDA <- train(
+  classe ~ .,
+  preProcess=c("center", "scale"), method = "lda", data = trn
+)
+```
+
+```{r}
+predLDA <- predict(modLDA, newdata = cv)
+cmLDA <- confusionMatrix(cv$classe, predLDA)
+cmLDA
+```
+
+The LDA method gives an accuracy of `r cmLDA$overall['Accuracy']`.
+
+## Ensemble:
+
+The stacked ensemble model uses the outcomes of the three models as predictors.
+
+```{r message=FALSE}
+library(pryr)
+getPred <- function(name, ...){
+  predict(
+    get(paste0('mod', toupper(name))),
+    ...
+  )
+}
+trnDF <- data.frame(sapply(c('RF', 'GBM', 'LDA'), getPred), classe=trn$classe)
+cvDF <- data.frame(sapply(c('RF', 'GBM', 'LDA'), partial(getPred, newdata=cv)), classe=cv$classe)
+modEns <- train(classe ~., method="gbm", data = trnDF)
+predEns <- predict(modEns, cvDF)
+cmEns <- confusionMatrix(cvDF$classe, predEns)
+cmEns
+```
+
+The ensemble model gives an accuracy of `r cmEns$overall['Accuracy']`, which is the same as the result given by random forest method.
+
+## Test Result:
+
+```{r}
+tstDF <- data.frame(sapply(c('RF', 'GBM', 'LDA'), partial(getPred, newdata=tst)))
+predEns_testing <- predict(modEns, tstDF)
+write.csv(predEns_testing, file = 'data/result-testing.csv')
+predEns_testing
+```
